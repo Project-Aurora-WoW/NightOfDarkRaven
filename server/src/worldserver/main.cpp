@@ -375,11 +375,6 @@ protected:
 public:
     void TickPlayer(uint32_t nowMs)
     {
-        static uint32_t sCalls = 0;
-        if (++sCalls % 50 == 1)
-            std::cerr << "[trace] tick# " << sCalls
-                      << " inWorld=" << (_inWorld ? 1 : 0)
-                      << " char=" << _characterGuid << std::endl;
         if (!_inWorld) return;
         Player* pl = g_world->FindPlayer(_characterGuid);
         if (!pl || !pl->inWorld) return;
@@ -699,10 +694,6 @@ private:
     void ResolvePlayerAttack(Player& pl, uint32_t nowMs)
     {
         Creature* cr = g_world->FindCreature(pl.targetGuid);
-        std::cerr << "[trace] resolve target=" << pl.targetGuid
-                  << " found=" << (cr ? 1 : 0)
-                  << " alive=" << (cr ? int(cr->alive) : -1)
-                  << " hp=" << (cr ? cr->health : 0u) << std::endl;
         if (!cr || !cr->alive)
         {
             StopAttack(pl);
@@ -957,10 +948,6 @@ void WorldSession::BroadcastToSession(uint32_t guid, uint16_t opcode, ByteBuffer
 // ------------------------------------------------------------
 void WorldTick(uint32_t nowMs)
 {
-    static uint32_t sTicks = 0;
-    if (++sTicks % 50 == 1)
-        std::cerr << "[trace] worldtick# " << sTicks << " players="
-                  << g_world->Players().size() << std::endl;
     // Атаки игроков по выбранной цели (пакет CMSG_ATTACK только задаёт цель).
     for (auto& [pguid, pl] : g_world->Players())
     {
