@@ -1,11 +1,15 @@
-#pragma once
+﻿#pragma once
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <algorithm>
 #include <array>
+#include <cstring>
 #include <deque>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <vector>
 #include "ByteBuffer.h"
 
@@ -28,6 +32,9 @@ public:
 class Session : public std::enable_shared_from_this<Session>
 {
 public:
+    static constexpr size_t kRecvBufferSize = 64 * 1024;
+    static constexpr size_t kMaxQueuedBytes = 4 * 1024 * 1024;
+
     explicit Session(SOCKET sock) : _socket(sock) {}
     virtual ~Session() { Close(); }
 
@@ -36,7 +43,11 @@ public:
     void Send(uint16_t opcode, const ByteBuffer& body = ByteBuffer())
     {
         const auto& c = body.contents();
+        if (c.size() > 0xFFFF)
+            return;
+
         std::vector<uint8_t> frame;
+        frame.reserve(c.size() + 4);
         uint16_t size = static_cast<uint16_t>(c.size());
         frame.push_back(static_cast<uint8_t>(size & 0xFF));
         frame.push_back(static_cast<uint8_t>(size >> 8));
@@ -45,42 +56,61 @@ public:
         frame.insert(frame.end(), c.begin(), c.end());
 
         std::lock_guard<std::mutex> lock(_writeMutex);
+        if (_queuedBytes + frame.size() > kMaxQueuedBytes)
+        {
+            // РљР»РёРµРЅС‚ РЅРµ С‡РёС‚Р°РµС‚: РѕС‚РєР»СЋС‡Р°РµРј, С‡С‚РѕР±С‹ РЅРµ СЃСЉРµСЃС‚СЊ РїР°РјСЏС‚СЊ.
+            _running = false;
+            return;
+        }
+        _queuedBytes += frame.size();
         _writeQueue.push_back(std::move(frame));
     }
 
     void Close()
     {
         _running = false;
+        _closeAfterFlush = false;
         if (_socket != INVALID_SOCKET)
         {
             shutdown(_socket, SD_BOTH);
             closesocket(_socket);
             _socket = INVALID_SOCKET;
         }
+        std::lock_guard<std::mutex> lock(_writeMutex);
+        _writeQueue.clear();
+        _queuedBytes = 0;
     }
+
+    // Закрыть соединение после отправки уже поставленных в очередь кадров.
+    void CloseAfterFlush() { _closeAfterFlush = true; }
 
     SOCKET GetSocket() const { return _socket; }
     bool IsRunning() const { return _running && _socket != INVALID_SOCKET; }
+
     bool HasPendingWrites() const
     {
         std::lock_guard<std::mutex> lock(_writeMutex);
         return !_writeQueue.empty();
     }
-    std::mutex& GetWriteMutex() { return _writeMutex; }
 
+    // false — соединение мертво, true — всё прочитано (или пока нечего).
     bool TryRecv()
     {
         if (_socket == INVALID_SOCKET) return false;
-        u_long pending = 0;
-        if (ioctlsocket(_socket, FIONREAD, &pending) != 0) return false;
-        if (pending == 0) return true;
-        int space = static_cast<int>(_recvBuffer.size()) - _recvLen;
-        if (space <= 0) return true;
-        int toRead = std::min<int>(pending, space);
-        int n = recv(_socket, reinterpret_cast<char*>(_recvBuffer.data() + _recvLen), toRead, 0);
-        if (n <= 0) return false;
-        _recvLen += n;
-        return true;
+
+        while (true)
+        {
+            int space = static_cast<int>(_recvBuffer.size()) - _recvLen;
+            if (space <= 0) return false;
+
+            int n = recv(_socket, reinterpret_cast<char*>(_recvBuffer.data() + _recvLen), space, 0);
+            if (n == 0) return false;
+            if (n == SOCKET_ERROR)
+                return WSAGetLastError() == WSAEWOULDBLOCK;
+
+            _recvLen += n;
+            return true;
+        }
     }
 
     bool ProcessFrames()
@@ -90,14 +120,20 @@ public:
             uint16_t size = static_cast<uint16_t>(_recvBuffer[0] | (_recvBuffer[1] << 8));
             uint16_t opcode = static_cast<uint16_t>(_recvBuffer[2] | (_recvBuffer[3] << 8));
             if (_recvLen < 4 + size) break;
+
             std::vector<uint8_t> body(_recvBuffer.data() + 4, _recvBuffer.data() + 4 + size);
             ByteBuffer pkt(std::move(body));
             std::memmove(_recvBuffer.data(), _recvBuffer.data() + 4 + size, _recvLen - 4 - size);
             _recvLen -= 4 + size;
-            try { HandlePacket(opcode, pkt); }
+
+            try
+            {
+                HandlePacket(opcode, pkt);
+            }
             catch (std::exception const& e)
             {
-                std::cerr << "Packet 0x" << std::hex << opcode << " error: " << e.what() << std::dec << "\n";
+                std::cerr << "[packet] opcode 0x" << std::hex << opcode << std::dec
+                          << " error: " << e.what() << "\n";
                 return false;
             }
         }
@@ -107,20 +143,34 @@ public:
     bool TrySend()
     {
         if (_socket == INVALID_SOCKET) return false;
+
         std::lock_guard<std::mutex> lock(_writeMutex);
         while (!_writeQueue.empty())
         {
             auto& frame = _writeQueue.front();
-            int sent = send(_socket, reinterpret_cast<const char*>(frame.data()), static_cast<int>(frame.size()), 0);
+            int sent = send(_socket, reinterpret_cast<const char*>(frame.data()),
+                            static_cast<int>(frame.size()), 0);
+
+            if (sent == SOCKET_ERROR)
+                return WSAGetLastError() == WSAEWOULDBLOCK;
             if (sent <= 0) return false;
+
             if (sent < static_cast<int>(frame.size()))
             {
-                std::vector<uint8_t> remaining(frame.begin() + sent, frame.end());
-                _writeQueue.pop_front();
-                _writeQueue.push_front(std::move(remaining));
+                _queuedBytes -= static_cast<size_t>(sent);
+                frame.erase(frame.begin(), frame.begin() + sent);
                 return true;
             }
+
+            _queuedBytes -= frame.size();
             _writeQueue.pop_front();
+        }
+
+        // Очередь опустела: если просили закрыться после отправки — закрываемся.
+        if (_closeAfterFlush)
+        {
+            _closeAfterFlush = false;
+            _running = false;
         }
         return true;
     }
@@ -133,14 +183,16 @@ public:
 
 private:
     SOCKET _socket;
-    bool _running = false;
-    std::array<uint8_t, 8192> _recvBuffer{};
+    volatile bool _running = false;
+    volatile bool _closeAfterFlush = false;
+    std::array<uint8_t, kRecvBufferSize> _recvBuffer{};
     int _recvLen = 0;
     std::deque<std::vector<uint8_t>> _writeQueue;
+    size_t _queuedBytes = 0;
     mutable std::mutex _writeMutex;
 };
 
-// Generic acceptor (TrinityCore SocketMgr style) — native Winsock select() loop.
+// Generic acceptor (TrinityCore SocketMgr style) вЂ” native Winsock select() loop.
 template <typename SessionT>
 class Acceptor
 {
@@ -150,6 +202,10 @@ public:
         _listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
         if (_listenSocket == INVALID_SOCKET)
             throw std::runtime_error("socket() failed");
+
+        BOOL reuse = TRUE;
+        setsockopt(_listenSocket, SOL_SOCKET, SO_REUSEADDR,
+                   reinterpret_cast<const char*>(&reuse), sizeof(reuse));
 
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
@@ -176,6 +232,9 @@ public:
     }
 
     void Stop() { _running = false; }
+
+    // Периодический колбэк игрового цикла (вызывается раз в итерацию select).
+    void SetTick(std::function<void()> tick) { _tick = std::move(tick); }
 
     void Run()
     {
@@ -209,6 +268,8 @@ public:
             int result = select(static_cast<int>(maxSock + 1), &readSet, &writeSet, &exceptSet, &tv);
             if (result == SOCKET_ERROR) continue;
 
+            if (_tick) _tick();
+
             if (FD_ISSET(_listenSocket, &readSet))
             {
                 sockaddr_in clientAddr{};
@@ -226,7 +287,7 @@ public:
 
             for (auto it = _sessions.begin(); it != _sessions.end();)
             {
-                auto& s = *it;
+                auto s = *it;
                 if (!s->IsRunning())
                 {
                     s->OnClosed();
@@ -248,11 +309,6 @@ public:
                     if (!s->TrySend()) dead = true;
                 }
 
-                if (!dead && s->HasPendingWrites())
-                {
-                    if (!s->TrySend()) dead = true;
-                }
-
                 if (dead)
                 {
                     s->Close();
@@ -269,6 +325,7 @@ public:
 
 private:
     SOCKET _listenSocket = INVALID_SOCKET;
-    bool _running = false;
+    volatile bool _running = false;
+    std::function<void()> _tick;
     std::vector<std::shared_ptr<SessionT>> _sessions;
 };

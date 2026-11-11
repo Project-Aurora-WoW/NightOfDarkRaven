@@ -115,20 +115,60 @@ static std::string HandleRegister(const std::string& body, MYSQL* mysql)
             "{\"error\":\"username or password too long\"}");
     }
 
-    std::string checkQuery = "SELECT id FROM ndv_auth.account WHERE username = '" + username + "'";
-    if (mysql_query(mysql, checkQuery.c_str()) != 0)
+    // Prepared statement: имя пользователя приходит от клиента и не должно попадать в SQL.
     {
-        return BuildHttpResponse(500, "Internal Server Error", "application/json",
-            "{\"error\":\"database query failed\"}");
+        MYSQL_STMT* checkStmt = mysql_stmt_init(mysql);
+        if (!checkStmt)
+        {
+            return BuildHttpResponse(500, "Internal Server Error", "application/json",
+                "{\"error\":\"stmt init failed\"}");
+        }
+
+        const char* checkSql = "SELECT id FROM ndv_auth.account WHERE username = ? LIMIT 1";
+        if (mysql_stmt_prepare(checkStmt, checkSql, strlen(checkSql)) != 0)
+        {
+            mysql_stmt_close(checkStmt);
+            return BuildHttpResponse(500, "Internal Server Error", "application/json",
+                "{\"error\":\"stmt prepare failed\"}");
+        }
+
+        unsigned long checkNameLen = static_cast<unsigned long>(username.size());
+        MYSQL_BIND checkBind[1];
+        memset(checkBind, 0, sizeof(checkBind));
+        checkBind[0].buffer_type = MYSQL_TYPE_STRING;
+        checkBind[0].buffer = const_cast<char*>(username.c_str());
+        checkBind[0].buffer_length = checkNameLen;
+        checkBind[0].length = &checkNameLen;
+
+        bool exists = false;
+        if (mysql_stmt_bind_param(checkStmt, checkBind) != 0 || mysql_stmt_execute(checkStmt) != 0)
+        {
+            mysql_stmt_close(checkStmt);
+            return BuildHttpResponse(500, "Internal Server Error", "application/json",
+                "{\"error\":\"database query failed\"}");
+        }
+
+        uint32_t existingId = 0;
+        unsigned long existingLen = sizeof(existingId);
+        bool existingNull = false;
+        MYSQL_BIND checkResult[1];
+        memset(checkResult, 0, sizeof(checkResult));
+        checkResult[0].buffer_type = MYSQL_TYPE_LONG;
+        checkResult[0].buffer = &existingId;
+        checkResult[0].length = &existingLen;
+        checkResult[0].is_null = &existingNull;
+
+        if (mysql_stmt_bind_result(checkStmt, checkResult) == 0)
+            exists = (mysql_stmt_fetch(checkStmt) == 0 && !existingNull);
+
+        mysql_stmt_close(checkStmt);
+
+        if (exists)
+        {
+            return BuildHttpResponse(409, "Conflict", "application/json",
+                "{\"error\":\"username already exists\"}");
+        }
     }
-    MYSQL_RES* res = mysql_store_result(mysql);
-    if (res && mysql_num_rows(res) > 0)
-    {
-        mysql_free_result(res);
-        return BuildHttpResponse(409, "Conflict", "application/json",
-            "{\"error\":\"username already exists\"}");
-    }
-    if (res) mysql_free_result(res);
 
     Salt salt = SRP6_GenerateSalt();
     Verifier verifier = SRP6_CalculateVerifier(username, password, salt);
@@ -153,21 +193,32 @@ static std::string HandleRegister(const std::string& body, MYSQL* mysql)
     MYSQL_BIND bind[4];
     memset(bind, 0, sizeof(bind));
 
+    // Длины живут на стеке: раньше на каждый запрос утекало 4 блока из new.
+    unsigned long nameLen = static_cast<unsigned long>(username.size());
+    unsigned long saltLen = static_cast<unsigned long>(salt.size());
+    unsigned long verifierLen = static_cast<unsigned long>(verifier.size());
+    unsigned long emailLen = static_cast<unsigned long>(email.size());
+    const char* emailPtr = email.empty() ? "" : email.c_str();
+
     bind[0].buffer_type = MYSQL_TYPE_STRING;
-    bind[0].buffer = (char*)username.c_str();
-    bind[0].length = new unsigned long(username.size());
+    bind[0].buffer = const_cast<char*>(username.c_str());
+    bind[0].buffer_length = nameLen;
+    bind[0].length = &nameLen;
 
     bind[1].buffer_type = MYSQL_TYPE_BLOB;
     bind[1].buffer = salt.data();
-    bind[1].length = new unsigned long(salt.size());
+    bind[1].buffer_length = saltLen;
+    bind[1].length = &saltLen;
 
     bind[2].buffer_type = MYSQL_TYPE_BLOB;
     bind[2].buffer = verifier.data();
-    bind[2].length = new unsigned long(verifier.size());
+    bind[2].buffer_length = verifierLen;
+    bind[2].length = &verifierLen;
 
     bind[3].buffer_type = MYSQL_TYPE_STRING;
-    bind[3].buffer = (char*)(email.empty() ? "" : email.c_str());
-    bind[3].length = new unsigned long(email.size());
+    bind[3].buffer = const_cast<char*>(emailPtr);
+    bind[3].buffer_length = emailLen;
+    bind[3].length = &emailLen;
 
     if (mysql_stmt_bind_param(stmt, bind) != 0)
     {
