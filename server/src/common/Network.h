@@ -3,6 +3,7 @@
 #include <ws2tcpip.h>
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstring>
 #include <deque>
 #include <functional>
@@ -10,6 +11,7 @@
 #include <memory>
 #include <mutex>
 #include <stdexcept>
+#include <thread>
 #include <vector>
 #include "ByteBuffer.h"
 
@@ -266,7 +268,13 @@ public:
             tv.tv_usec = 100000; // 100 ms
 
             int result = select(static_cast<int>(maxSock + 1), &readSet, &writeSet, &exceptSet, &tv);
-            if (result == SOCKET_ERROR) continue;
+            if (result == SOCKET_ERROR)
+            {
+                // Дескрипторы в наборах невалидны: пересобираем их на следующей итерации.
+                std::cerr << "[net] select failed: " << WSAGetLastError() << "\n";
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                continue;
+            }
 
             if (_tick) _tick();
 
