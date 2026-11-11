@@ -722,19 +722,25 @@ private:
         }
 
         Creature& victim = found->second;
-        if (victim.health == 0)
+        if (!victim.alive || victim.health == 0)
         {
             // Существо уже мертво: ждём респавна и не бьём труп.
             StopAttack(pl);
             return;
         }
 
+        const uint32_t before = victim.health;
         const uint32_t applied = std::min(damage, victim.health);
         victim.health -= applied;
 
+        std::cout << "[world] hit '" << victim.name << "' for " << applied
+                  << " (hp " << before << " -> " << victim.health << "/"
+                  << victim.maxHealth << ")" << std::endl;
+
         SendDamage(pl.guid, victim.guid, applied, TARGET_CREATURE);
 
-        if (victim.health == 0 && victim.alive)
+        // Смерть фиксируем здесь: элемент найден в хранилище, ссылка валидна.
+        if (victim.health == 0)
             HandleCreatureDeath(victim, &pl);
     }
 
@@ -1105,7 +1111,8 @@ int main(int argc, char** argv)
             return 1;
         }
 
-        std::cout << "[world] databases ready: " << authDbName << " + " << charDbName << "\n";
+        std::cout << "[world] databases ready: " << authDbName << " + " << charDbName << std::endl;
+        std::cout.flush();
 
         TokenStore tokens(authDb);
         tokens.PurgeExpired();
