@@ -1,0 +1,13 @@
+{
+	"FileVersion": 3,
+	"EngineAssociation": "{979DCD83-4626-3D91-0945-40BC3BB4A165}",
+	"Category": "",
+	"Description": "Night of the Dark Raven MMORPG client",
+	"Modules": [
+		{
+			"Name": "NightOfDarkRaven",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	]
+}

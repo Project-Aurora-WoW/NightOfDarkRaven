@@ -1,0 +1,45 @@
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+find_package(Threads REQUIRED)
+
+# OpenSSL (SRP6 / password hashing) - optional for now
+if(WIN32 AND NOT OPENSSL_ROOT_DIR AND EXISTS "C:/Program Files/OpenSSL-Win64")
+  set(OPENSSL_ROOT_DIR "C:/Program Files/OpenSSL-Win64")
+endif()
+find_package(OpenSSL QUIET)
+
+# MySQL client (8.0)
+if(WIN32)
+  set(MySQL_INCLUDE_DIR "C:/Program Files/MySQL/MySQL Server 8.0/include")
+  set(MySQL_LIBRARY "C:/Program Files/MySQL/MySQL Server 8.0/lib/libmysql.lib")
+endif()
+
+add_library(ndv_common INTERFACE)
+target_include_directories(ndv_common INTERFACE src/common ${MySQL_INCLUDE_DIR})
+target_link_libraries(ndv_common INTERFACE Threads::Threads)
+if(OPENSSL_FOUND)
+  target_link_libraries(ndv_common INTERFACE OpenSSL::SSL OpenSSL::Crypto)
+endif()
+if(WIN32)
+  target_link_libraries(ndv_common INTERFACE ws2_32 mswsock)
+  target_compile_definitions(ndv_common INTERFACE _WIN32_WINNT=0x0A00)
+endif()
+
+add_executable(authserver src/authserver/main.cpp)
+target_link_libraries(authserver PRIVATE ndv_common)
+if(WIN32)
+  target_link_libraries(authserver PRIVATE "${MySQL_LIBRARY}")
+endif()
+
+add_executable(worldserver src/worldserver/main.cpp)
+target_link_libraries(worldserver PRIVATE ndv_common)
+if(WIN32)
+  target_link_libraries(worldserver PRIVATE "${MySQL_LIBRARY}")
+endif()
+
+add_executable(registerserver src/registerserver/main.cpp)
+target_link_libraries(registerserver PRIVATE ndv_common)
+if(WIN32)
+  target_link_libraries(registerserver PRIVATE "${MySQL_LIBRARY}")
+endif()

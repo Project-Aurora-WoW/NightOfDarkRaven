@@ -1,0 +1,99 @@
+# Night of the Dark Raven - MMORPG Project
+# =========================================
+
+## О проекте
+Night of the Dark Raven - это MMORPG проект на базе Unreal Engine 5.8.4 в сеттинге фэнтези. Проект включает в себя:
+- Сервер авторизации на C++ (Trinity Core стиль)
+- Игровой сервер
+- Клиент на базе Unreal Engine 5.8.4
+- База данных MySQL с схемой для аккаунтов, персонажей и защиты
+
+## Структура проекта
+```
+NightOfDarkRaven/
+├── authserver/              # Сервер авторизации (C++ с TrinityCore стилем)
+├── client/                  # UE5.8 клиент
+├── server/                  # Серверные скрипты и конфигурация
+│   ├── sql/                # SQL скрипты для баз данных
+│   └── src/
+│       └── authserver/     # Исходный код сервера авторизации
+│   └── NightOfDarkRaven.Build.cs
+├── authserver.conf          # Конфигурационный файл сервера
+└── .gitignore              # Игнорируемые файлы
+└── README.md               # Описание проекта
+```
+
+## Структура баз данных
+Проект использует три базы данных MySQL:
+- `ndv_auth` - Аутентификация аккаунтов (таблицы: account, realm, account_protection, ip_bans, protection_settings, user_roles, role_permissions, account_roles)
+- `ndv_world` - Мировые данные (таблица: characters)
+- `ndv_characters` - Отдельная база персонажей (через separate_chars_db.sql)
+
+## Основные компоненты
+1. **AuthServer** - Сервер авторизации на C++ (TrinityCore стиль)
+   - SRP6 протокол аутентификации
+   - Защита от brute-force атак
+   - Ролевая система доступа (user/GM/admin)
+   
+2. **Игровой сервер**
+   - World server на порту 8085
+   - Персонажи и управление инвентарем
+
+3. **Клиент**
+   - Unreal Engine 5.8
+   - UI интерфейс с меню входа
+
+## Настройка
+1. Настройте `authserver.conf` с данными вашей MySQL базы данных
+2. Выполните `initial_db.sql` скрипты для создания баз данных
+3. Запустите `authserver.exe` на порту 3724
+4. Запустите `worldserver.exe` на порту 8085
+5. Запустите клиент Unreal Engine 5.8
+
+## Начало работы
+1. Настройте `authserver.conf` с вашими данными MySQL
+2. Выполните скрипты из папки `server/sql/initial/`
+3. Запустите `authserver.exe`
+4. Запустите `worldserver.exe`
+5. Запустите клиент Unreal Engine 5.8 и войдите под аккаунтом `raven` / `raven`
+
+## Лицензия
+Проект создан в образовательных целях.
+```
+
+Now let me create the .gitignore file:</think>
+<tool_call>
+<function=editor>
+<parameter=new_text>
+# Night of the Dark Raven - .gitignore
+# =========================================
+# Игнорируемые файлы и папки
+
+# CMake generated files
+build_server/
+
+# UE5.8 compiled output
+client/Binaries/
+client/Intermediate/
+
+# Configuration file (contains database credentials)
+authserver.conf
+
+# Visual Studio project files
+*.sln
+*.vcxproj
+*.vcxproj.filters
+
+# Binary executables
+*.exe
+*.dll
+
+# Windows specific
+*.sdf
+*.suo
+
+# CMake generated files (alternate)
+build/
+
+# Hidden files
+.DS_Store
